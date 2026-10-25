@@ -92,6 +92,161 @@
             </div>
         );
 
+        // 升級版：專業現金流量桑基圖 (Sankey Diagram) - 純 SVG 繪製，無字體切斷問題
+        const CashflowDiagram = ({ incomes, expenses, netFlow, totalIncome, formatCurrency }) => {
+            const totalExpense = expenses.reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
+            const validIncomes = incomes.filter(i => i.amount > 0);
+            const validExpenses = expenses.filter(e => e.amount > 0);
+            
+            if (totalIncome === 0 && totalExpense === 0) {
+                return (
+                    <div className="bg-white rounded-2xl p-6 shadow-sm border border-slate-100 flex flex-col mb-6">
+                        <h2 className="text-lg font-semibold mb-4 text-slate-800">每月現金流量圖 (Sankey)</h2>
+                        <div className="h-[300px] flex items-center justify-center text-slate-400 bg-slate-50 rounded-xl border-2 border-dashed border-slate-200">
+                            請在左側新增收支項目來產生現金流圖表
+                        </div>
+                    </div>
+                );
+            }
+
+            // 設定圖表畫布比例 (1000 x 500)
+            const W = 1000;
+            const H = 500;
+            const colW = 280; // 左右柱子的寬度
+            const gap = 15;   // 項目之間的間距
+            
+            const totalFlow = Math.max(totalIncome, totalExpense);
+            const leftCount = validIncomes.length + (netFlow < 0 ? 1 : 0);
+            const rightCount = validExpenses.length + (netFlow > 0 ? 1 : 0);
+            const maxGaps = Math.max(leftCount - 1, rightCount - 1, 0);
+            
+            // 計算比例尺 (根據可用高度與總流量)
+            const scale = totalFlow > 0 ? (H - maxGaps * gap) / totalFlow : 1;
+
+            // 1. 處理左側節點 (資金來源)
+            let currentY = 0;
+            const leftNodes = [];
+            const inColors = ['#3b82f6', '#0ea5e9', '#0284c7', '#2563eb'];
+            const sources = [...validIncomes.map((item, i) => ({ ...item, color: inColors[i % inColors.length] }))];
+            
+            // 如果透支，左側補上「動用存款」節點來平衡水流
+            if (netFlow < 0) {
+                sources.push({ id: 'deficit', name: '⚠️ 當月透支 (動用存款)', amount: Math.abs(netFlow), color: '#475569' });
+            }
+            
+            sources.forEach(src => {
+                const h = src.amount * scale;
+                leftNodes.push({ ...src, x: 0, y: currentY, h, rightY: currentY });
+                currentY += h + gap;
+            });
+
+            // 2. 處理右側節點 (資金去向)
+            currentY = 0;
+            const rightNodes = [];
+            const exColors = ['#f43f5e', '#ef4444', '#f97316', '#f59e0b', '#ec4899', '#d946ef'];
+            const targets = [...validExpenses.map((item, i) => ({ ...item, color: exColors[i % exColors.length] }))];
+            
+            // 如果有結餘，右側補上「儲蓄」節點
+            if (netFlow > 0) {
+                targets.push({ id: 'net', name: '淨現金流 (本月儲蓄)', amount: netFlow, color: '#10b981' });
+            }
+            
+            targets.forEach(tgt => {
+                const h = tgt.amount * scale;
+                rightNodes.push({ ...tgt, x: W - colW, y: currentY, h, leftY: currentY });
+                currentY += h + gap;
+            });
+
+            // 3. 處理流向與連線 (Bezier Curves)
+            const links = [];
+            let lIdx = 0, rIdx = 0;
+            let lUsed = 0, rUsed = 0;
+
+            while (lIdx < leftNodes.length && rIdx < rightNodes.length) {
+                const src = leftNodes[lIdx];
+                const tgt = rightNodes[rIdx];
+                const srcRem = src.amount - lUsed;
+                const tgtRem = tgt.amount - rUsed;
+                const flow = Math.min(srcRem, tgtRem);
+                
+                if (flow > 0) {
+                    const linkH = flow * scale;
+                    links.push({
+                        id: `${src.id}-${tgt.id}-${flow}`,
+                        src, tgt, linkH,
+                        y1: src.rightY + linkH / 2,
+                        y2: tgt.leftY + linkH / 2
+                    });
+                    src.rightY += linkH;
+                    tgt.leftY += linkH;
+                }
+                
+                lUsed += flow;
+                rUsed += flow;
+                
+                // 浮點數精度容差
+                if (lUsed >= src.amount - 0.001) { lIdx++; lUsed = 0; }
+                if (rUsed >= tgt.amount - 0.001) { rIdx++; rUsed = 0; }
+            }
+
+            return (
+                <div className="bg-white rounded-2xl p-6 shadow-sm border border-slate-100 flex flex-col mb-6 overflow-hidden">
+                    <h2 className="text-lg font-semibold mb-4 text-slate-800">每月現金流量分配圖</h2>
+                    
+                    {/* 使用 paddingBottom 實現完美 RWD 縮放，字體永不跑版 */}
+                    <div className="w-full relative" style={{ paddingBottom: '50%' }}>
+                        <svg viewBox={`0 0 ${W} ${H}`} className="absolute top-0 left-0 w-full h-full font-sans">
+                            
+                            {/* 繪製動態水流線 (Links) */}
+                            {links.map(link => {
+                                const x1 = colW;
+                                const x2 = W - colW;
+                                const cx1 = x1 + (x2 - x1) * 0.4;
+                                const cx2 = x2 - (x2 - x1) * 0.4;
+                                const d = `M ${x1} ${link.y1} C ${cx1} ${link.y1}, ${cx2} ${link.y2}, ${x2} ${link.y2}`;
+                                return (
+                                    <path key={link.id} d={d} fill="none" stroke={link.src.color} strokeWidth={link.linkH} 
+                                        opacity="0.2" className="transition-all duration-300 hover:opacity-40 cursor-pointer" />
+                                );
+                            })}
+                            
+                            {/* 繪製左側資金池 (Incomes) */}
+                            {leftNodes.map((node, i) => (
+                                <g key={`l-${i}`} transform={`translate(${node.x}, ${node.y})`}>
+                                    <rect width={colW} height={node.h} fill={node.color} rx={6} className="shadow-sm" />
+                                    {/* 只有高度大於 24px 時才顯示文字，避免重疊 */}
+                                    {node.h >= 24 && (
+                                        <>
+                                            <text x={16} y={node.h / 2 + 5} fill="white" fontSize={16} fontWeight="600" className="pointer-events-none">{node.name}</text>
+                                            <text x={colW - 16} y={node.h / 2 + 5} fill="white" fontSize={16} textAnchor="end" opacity="0.95" className="pointer-events-none">{formatCurrency(node.amount)}</text>
+                                        </>
+                                    )}
+                                </g>
+                            ))}
+
+                            {/* 繪製右側資金去向 (Expenses & NetFlow) */}
+                            {rightNodes.map((node, i) => (
+                                <g key={`r-${i}`} transform={`translate(${node.x}, ${node.y})`}>
+                                    <rect width={colW} height={node.h} fill={node.color} rx={6} className="shadow-sm" />
+                                    {node.h >= 24 && (
+                                        <>
+                                            <text x={16} y={node.h / 2 + 5} fill="white" fontSize={16} fontWeight="600" className="pointer-events-none">{node.name}</text>
+                                            <text x={colW - 16} y={node.h / 2 + 5} fill="white" fontSize={16} textAnchor="end" opacity="0.95" className="pointer-events-none">{formatCurrency(node.amount)}</text>
+                                        </>
+                                    )}
+                                </g>
+                            ))}
+                        </svg>
+                    </div>
+                    
+                    <div className="mt-4 flex justify-between text-sm font-medium text-slate-400 px-2 border-t border-slate-100 pt-3">
+                        <span>總資金來源 (收入 / 透支)</span>
+                        <span>資金去向 (支出 / 儲蓄)</span>
+                    </div>
+                </div>
+            );
+        };
+
         function CashflowApp() {
             const [user, setUser] = useState(null);
             const [cloudStatus, setCloudStatus] = useState('連線中...');
@@ -522,6 +677,10 @@
 
                             {/* 右側圖表區塊 */}
                             <div className="lg:col-span-8 flex flex-col gap-6">
+                                
+                                {/* 這裡插入現金流分配圖 */}
+                                <CashflowDiagram incomes={incomes} expenses={expenses} netFlow={netFlow} totalIncome={totalIncome} formatCurrency={formatCurrency} />
+
                                 <div className="bg-white rounded-2xl p-6 shadow-sm border border-slate-100 flex flex-col">
                                     <h2 className="text-lg font-semibold mb-4 text-slate-800 flex justify-between items-center">
                                         長期資產成長與曝險趨勢
